@@ -136,7 +136,9 @@ systemctl restart networking
 ```
 apt install -y libreswan
 nano /etc/ipsec.conf
-//вставить в конец файла 
+```
+Вставить в конец файла 
+```
 conn enc_gre
   	auto=start
 	authby=secret
@@ -146,8 +148,14 @@ conn enc_gre
 	leftprotoport=gre
 	right=5.5.5.100
 	rightprotoport=gre
+```
+```
 nano /etc/ipsec.secrets
+```
+```
 4.4.4.100 5.5.5.100 : PSK “pass”
+```
+```
 systemctl enable ipsec
 ```
 ## Frr
@@ -155,8 +163,12 @@ systemctl enable ipsec
 ```
 apt install -y frr
 nano /etc/frr/daemons 
+```
+```
 ospfd=yes
 zebra=yes
+```
+```
 reboot
 systemctl restart frr	
 vtysh
@@ -167,21 +179,130 @@ network 10.10.10.0/30 area 0
 do wr
 exit
 ```
+### RTR-R
+```
+apt install -y frr
+nano /etc/frr/daemons 
+```
+```
+ospfd=yes
+zebra=yes
+```
+```
+reboot
+systemctl restart frr
+vtysh
+conf t
+router ospf
+network 172.16.100.0/24 area 0
+network 10.10.10.0/30 area 0
+do wr
+exit
+```
+## iptables
+### RTR-L
+```
+apt install -y iptables
+iptables -A INPUT -i ens192 -p icmp -j ACCEPT
+iptables -A INPUT -i ens192 -p gre -j ACCEPT
+iptables -A INPUT -i ens192 -p tcp --dport 22 -j ACCEPT
+iptables -A INPUT -i ens192 -p tcp --dport 80 -j ACCEPT
+iptables -A INPUT -i ens192 -p tcp --dport 443 -j ACCEPT
+iptables -A INPUT -i ens192 -p udp --dport 500 -j ACCEPT
+iptables -A INPUT -i ens192 -p udp --dport 4500 -j ACCEPT
+iptables -t nat -A POSTROUTING -o ens192 -j MASQUERADE
+iptables -t nat -A PREROUTING -i ens192 -p udp --dport 2244 -j DNAT --to-destination 192.168.200.100:22
+iptables -t nat -A PREROUTING -i ens192 -p udp --dport 53 -j DNAT --to-destination 192.168.200.200
+iptables -t nat -A PREROUTING -s 3.3.3.0/24 -j DNAT --to-destination 192.168.200.200 (docker)
+iptables -t nat -A PREROUTING -s 3.3.3.0/24 -j DNAT --to-destination 192.168.200.100 (docker)
+iptables -A INPUT -m conntrack -ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -A FORWARD -m conntrack -ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -A INPUT -i ens192 -j DROP
+apt install -y iptables-persistent
+```
+### RTR-R
+```
+apt install -y iptables
+iptables -A INPUT -i ens192 -p icmp -j ACCEPT
+iptables -A INPUT -i ens192 -p gre -j ACCEPT
+iptables -A INPUT -i ens192 -p tcp --dport 22 -j ACCEPT
+iptables -A INPUT -i ens192 -p tcp --dport 80 -j ACCEPT
+iptables -A INPUT -i ens192 -p tcp --dport 443 -j ACCEPT
+iptables -A INPUT -i ens192 -p udp --dport 500 -j ACCEPT
+iptables -A INPUT -i ens192 -p udp --dport 4500 -j ACCEPT
+iptables -t nat -A POSTROUTING -o ens192 -j MASQUERADE
+iptables -t nat -A PREROUTING -i ens192 -p tcp –dport 2222 -j DNAT --to-destination 172.16.100.100:22
+iptables -t nat -A PREROUTING -s 3.3.3.0/24 -j DNAT –to-destination 172.16.100.100
+iptables -A INPUT -m conntrack -ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -A FORWARD -m conntrack -ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -A INPUT -i ens192 -j DROP
+apt install -y iptables-persistent
+```
+## Docker
+### WEB-L WEB-R
+add docker.iso
+```
+apt install docker*
+systemctl enable docker
+mkdir /mnt/docker
+mount /dev/sr0 /mnt/docker
+docker image load -i /mnt/docker/app.tar
+docker run -d -p 80:80 --restart=always app:latest
+```
+## DNS
+### ISP
+```
+apt install -y bind9
+nano /etc/bind/named.conf.options
+```
+Вставить
+```
+dnssec-validation no;
+```
+```
+nano /etc/bind/named.conf.default-zones
+```
+В конце пишем
+```
+zone "demo.wsr" {
+	type master;
+	file "/etc/bind/db.demo";
+};
+```
+```
+cp /etc/bind/db.127 /etc/bind/db.demo
+nano /etc/bind/db.demo
+```
+```
+$TTL	10
+@		IN	SOA	demo.wsr. root.demo.wsr. (
+			1		; Serial
+			604800		; Refresh
+			86400		; Retry
+			2413200		; Expire
+			604800  )	; Negative Cache TTL
+;
+@		IN	NS	demo.wsr.			
+		IN	A	3.3.3.1
+isp		IN	A	3.3.3.1
+www		IN	A	4.4.4.100
+		IN	A	5.5.5.100
+internet	IN	CNAME	isp
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+int		IN	NS	int.demo.wsr.
+		IN	A	4.4.4.100
+```
+```
+rndc reload
+systemctl restart bind 9	
+systemctl enable bind9
+```
+journalctl -xe в помощь если ошибки
+### SRV
+```
+apt install -y bind9
+nano /etc/bind/named.conf.options
+```
 
 
 
