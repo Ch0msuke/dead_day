@@ -138,7 +138,7 @@ apt install -y libreswan
 nano /etc/ipsec.conf
 //вставить в конец файла 
 conn enc_gre
-  auto=start
+  	auto=start
 	authby=secret
 	type=tunnel
 	ike=aes-sha1;modp2048
