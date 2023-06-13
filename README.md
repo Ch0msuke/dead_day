@@ -6,4 +6,4 @@ sysctl -p
 
 ```
 ```
-hostnamectl set-hostname “name_VM”
+hostnamectl set-hostname ***“name_VM”***
