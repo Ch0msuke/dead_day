@@ -397,3 +397,11 @@ nano /etc/fstab
 //192.168.200.200/web	/opt/storage	cifs	rw	0	0
 systemctl enable cifs-utils
 ----------------------------------------
+_____________________SSH__________________
+---------------------ALL-------------------
+apt install -y  openssh-server ssh
+systemctl start sshd
+systemctl status sshd
+//connect
+ssh root@"name/IP"
+
