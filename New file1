@@ -1,0 +1,376 @@
+nano /etc/network/interfaces 
+
+apt update
+
+apt install -y network-manager sshpass openssh-server chrony
+sed -in "s/#net.ipv4.ip_forward=1/net.ipv4.ip_forward=1/g" /etc/sysctl.conf
+sysctl -p
+
+sed -in "s/#PermitRootLogin.*/PermitRootLogin yes/g" /etc/ssh/sshd_config
+systemctl enable sshd
+systemctl restart sshd
+
+systemctl disable --now apparmor
+
+ipsec:
+libreswan>>/etc/ipsec.conf
+conn enc_gre
+	auto=start
+	authby=secret
+	type=tunnel
+	ike=aes-sha1;modp2048
+	left=4.4.4.100
+	leftprotoport=gre
+	right=5.5.5.100
+	rightprotoport=gre
+secret>>4.4.4.100 5.5.5.100 : PSK “pass”
+
+ntp:
+apt install -y chrony
+systemctl enable chrony
+nano /etc/chrony/chrony.conf
+server 127.127.1.0 (isp)
+local stratum 4
+allow 4.4.4.100
+allow 3.3.3.10
+systemctl restart chronyd
+
+sed -in "s/pool 2.*/server 192.168.100.200 iburst/g" /etc/chrony/chrony.conf
+systemctl enable chrony
+systemctl restart chronyd
+
+iptables:
+rtr-l
+iptables -t nat -A POSTROUTING -o ens192 -j SNAT --to 4.4.4.100
+iptables -A INPUT ! -i ens192 -j ACCEPT
+iptables -A FORWARD ! -i ens192 -j ACCEPT
+iptables -A INPUT -p gre -j ACCEPT
+iptables -A INPUT -p icmp -j ACCEPT
+iptables -A INPUT -p udp --dport 500 -j ACCEPT
+iptables -A INPUT -p udp --dport 4500 -j ACCEPT
+iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+iptables -A FORWARD -p udp --dport 53 -j ACCEPT
+iptables -A FORWARD -p tcp --dport 22 -j ACCEPT
+iptables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -t nat -A PREROUTING -i ens192 -p tcp --dport 2222 -j DNAT --to 192.168.100.100:22 
+iptables -t nat -A PREROUTING -i ens192 -p udp --dport 53 -j DNAT --to 192.168.100.200
+
+rtr-r
+iptables -t nat -A POSTROUTING -o ens192 -j SNAT --to 5.5.5.100
+iptables -A INPUT ! -i ens192 -j ACCEPT
+iptables -A FORWARD ! -i ens192 -j ACCEPT
+iptables -A INPUT -p gre -j ACCEPT
+iptables -A INPUT -p icmp -j ACCEPT
+iptables -A INPUT -p udp --dport 500 -j ACCEPT
+iptables -A INPUT -p udp --dport 4500 -j ACCEPT
+iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+iptables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -t nat -A PREROUTING -i ens192 -p tcp --dport 2244 -j DNAT --to 172.16.100.100:22
+
+doker:
+На вебах: добавить диск
+apt install -y docker*
+
+systemctl enable --now docker
+
+mkdir /mnt/docker
+mount /dev/sr0 /mnt/docker
+docker image load -i /mnt/docker/app.tar
+docker run -d -p 80:80 --restart=always app:latest
+systemctl enable --now docker
+lsblk узнать какой sr
+iptables -t nat -A PREROUTING -i ens192 -p tcp --dport 80 -j DNAT --to (ip web-l)
+iptables -t nat -A PREROUTING -i ens192 -p tcp --dport 80 -j DNAT --to (ip web-r)
+
+
+
+root@srv:~# nano /etc/bind/named.conf.options
+
+Изменяем (ничего не удаляем):
+
+options {
+	...
+forwarders {
+	4.4.4.1;
+};
+dnssec-validation no;
+recursion yes;
+allow-recursion {
+172.16.100.0/24;
+	192.168.100.0/24;
+	10.10.10.0/30;
+	127.0.0.0/8;
+	};
+};
+
+Открываем файл /etc/bind/named.conf.default-zones:
+
+root@srv:~# nano /etc/bind/named.conf.default-zones
+
+Дописываем в конце:
+
+zone “int.demo.wsr” {
+	type master;
+	file “/etc/bind/db.int.demo.wsr”;
+};
+zone “100.168.192.in-addr.arpa” {
+	type master;
+	allow-query {
+172.16.100.0/24;
+	192.168.100.0/24;
+	10.10.10.0/30;
+	127.0.0.0/8;
+};
+	file “/etc/bind/db.192”;
+};
+zone “100.16.172.in-addr.arpa” {
+	type master;
+	allow-query {
+172.16.100.0/24;
+	192.168.100.0/24;
+	10.10.10.0/30;
+	127.0.0.0/8
+};
+	file “/etc/bind/db.172”;
+};
+
+
+
+RAID
+
+Скачиваем утилиту:
+
+root@srv:~# apt install -y mdadm
+
+Создаем RAID(до этого необходимо посмотреть какие диски предназначены для RAID с помощью утилиты lsblk. Нам нужны те у которых размер 2G):
+
+root@srv:~# mdadm --create /dev/md0 -l 1 -n 2 /dev/sdb /dev/sdc	
+
+Далее создаем файловую систему, создаем директория для монтирования и монтируем:
+
+root@srv:~# mkfs.ext4 -L ourraid /dev/md0
+root@srv:~# mkdir /mnt/storage
+root@srv:~# mount /dev/md0 /mnt/storage
+
+Если все прошло без ошибок - добавляем в конец файла /etc/fstab строку
+
+root@srv:~# nano /etc/fstab
+
+LABEL=ourraid 	/mnt/storage	ext4	defaults	0	2
+
+SAMBA server
+
+На SRV устанавливаем samba:
+
+root@srv:~# apt install –y samba
+
+Открываем конфиг:
+
+root@srv:~# nano /etc/samba/smb.conf
+
+В самом конце дописываем:
+
+[web]
+   path=/mnt/storage
+   browsable=yes
+   writable=yes
+   guest ok=yes
+   read only=no
+   public=yes
+   create mask=0777
+   directory mask = 0777
+   force create mode = 0777
+   force directory mode = 0777
+
+Меняем права на директорию /mnt/storage:
+
+root@srv:~# chmod 777 -R /mnt/storage
+
+Перезапускаем:
+
+root@srv:~# systemctl restart smbd
+
+SAMBA clients
+
+На WEB-R и WEB-L:
+
+root@all-web:~# apt install -y cifs-utils
+
+Пробуем:
+root@all-web:~# mount.cifs //srv/web /opt/share
+
+Если все прошло без ошибок - добавляем в конец /etc/fstab строку
+
+root@all-web:~# nano /etc/fstab
+
+//srv/web	/opt/share	cifs	user,rw,guest	0	0
+
+
+
+OpenSSL
+
+Создаем директорию в которой будут располагаться сертификаты:
+
+root@srv:~# mkdir /var/ca
+
+Переходим в эту директорию:
+
+root@srv:~# cd /var/ca
+
+Создаем необходимые директории и файлы:
+
+root@srv:/var/ca# mkdir certs newcerts private crl
+root@srv:/var/ca# touch index.txt
+root@srv:/var/ca# echo -n “00” > serial
+
+Редактируем конфиг:
+
+root@srv:/var/ca# nano /etc/ssl/openssl.cnf
+
+...
+dir = /var/ca						#Меняем значение
+...
+default_days = 500					#Меняем значение		
+...
+policy = policy_anything				#Меняем значение
+...
+countryName_default = RU				#Меняем значение
+...
+0.organizationName_default = DEMO.WSR	
+...
+#В секции [usr_cert] ищем, subjectAltName раскомментируем и меняем
+subjectAltName=@web_alt				#Меняем значение
+...
+#Перед любой секцией дописываем (после этих строк обязательно должна быть новая секция или конец файла)
+[web_alt]
+DNS.1=www.demo.wsr					#Дописываем
+...
+
+Корневой сертификат
+
+Делаем запрос:
+
+root@srv:/var/ca# openssl req -new -nodes -out cacert.csr \ 
+-keyout private/cakey.pem -extensions v3_ca
+
+В предложенных полях заполняем по следующим правилам:
+Country Name, Organization Name - просто жмем Enter
+Common Name - вводим какое-либо значение, например CA
+Все остальные поля - ставим точку и жмем Enter
+
+Самоподписываем: 
+
+root@srv:/var/ca# openssl ca -selfsign -in cacert.csr \ 
+-out cacert.pem -extensions v3_ca
+
+Соглашаемся. Готово, корневой сертификат есть.
+
+Сертификат для WEB-приложения
+
+Делаем запрос:
+
+root@srv:/var/ca# openssl req -new -nodes -out certs/web.csr \ 
+-keyout certs/web.key
+
+В предложенных полях заполняем по следующим правилам:
+Country Name, Organization Name - просто жмем Enter
+Common Name - www.demo.wsr (обязательно)
+Все остальные поля - ставим точку и жмем Enter
+
+Самоподписываем: 
+
+root@srv:/var/ca# openssl ca -in certs/web.csr \
+-out certs/web.pem -extensions usr_cert
+
+Соглашаемся. Готово, сертификат есть.
+
+WEB-приложение
+
+docker
+
+Все пакеты нужные для установки docker пакеты находятся на диске. На каком именно диске можно узнать с помощью lsblk. 500Мб диск - это оно.
+
+Создаем папку и монтируем:
+
+root@all-web:~# mkdir /mnt/docker
+root@all-web:~# mount /dev/sr5 /mnt/docker
+ 
+
+Устанавливаем:
+
+root@all-web:~# apt install -y /mnt/docker/*.deb
+
+Также там находиться инструкция которую можно скопировать на клиента при помощи scp и открыть (рекомендуеться так и сделать).
+
+Загружаем образ docker:
+
+root@all-web:~# docker image load -i /mnt/docker/appdocker*
+
+Запускаем контейнер:
+
+root@all-web:~# docker run -p 80:5000 -d --restart always \
+appdocker0:latest
+
+Reverse-proxy
+
+Создадим папку для сертификатов и установим nginx:
+
+root@all-rtr:~# mkdir /web
+root@all-rtr:~# apt install -y nginx
+
+Копируем наши WEB сертификат и ключ с SRV на RTR-L и RTR-R
+
+root@srv:~# scp /var/ca/certs/* root@rtr-l:/web/
+root@srv:~# scp /var/ca/certs/* root@rtr-r:/web/
+ 
+Настраиваем обратный прокси:
+
+root@all-rtr:~# nano /etc/nginx/sites-enabled/web
+
+upstream web {
+	server 192.168.100.100:80;
+	server 172.16.100.100:80;
+}
+
+server {
+	listen 80;
+	server_name www.demo.wsr;
+	return 301 https://www.demo.wsr$request_uri;
+}
+
+server {
+	listen 443 ssl;
+	server_name www.demo.wsr;
+	ssl_certificate /web/web.pem;
+	ssl_certificate_key /web/web.key;
+	ssl_protocols TLSv1 TLSv1.1 TLSv1.2 TLSv1.3;
+	proxy_connect_timeout 5;
+	location / {
+	proxy_pass http://web/;
+}
+}
+
+Чекаем ошибки и ребутаем:
+
+root@all-rtr:~# nginx -t
+root@all-rtr:~# systemctl restart nginx
+root@all-rtr:~# systemctl enable nginx
+
+Заставляем клиента верить сертификату
+
+Копируем на клиента корневой и WEB сертификат:
+
+сначала копируем корневой сертификат на rtr-l:
+
+root@rtr-l:~# scp root@srv:/var/ca/cacert.pem /web/
+
+Запускаем консоль (win+r -> cmd -> enter)
+
+C:\Users\%username%> scp root@4.4.4.100:/web/*.pem ./desktop
+
